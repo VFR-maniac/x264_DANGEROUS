@@ -831,6 +831,10 @@ static int x264_validate_parameters( x264_t *h, int b_open )
 
     if( !h->param.analyse.i_weighted_pred && h->param.rc.b_mb_tree && h->param.analyse.b_psy )
         h->param.analyse.i_weighted_pred = X264_WEIGHTP_FAKE;
+    if( !h->param.rc.b_mb_tree || !h->param.analyse.b_psy )
+        h->param.rc.f_fade_compensate = 0;
+    else if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_NONE )
+        h->param.rc.f_fade_compensate += 0.1;
 
     if( h->param.analyse.i_fgo )
     {
