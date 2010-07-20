@@ -167,6 +167,7 @@ void x264_param_default( x264_param_t *param )
     param->b_pic_struct = 0;
     param->b_fake_interlaced = 0;
     param->i_frame_packing = -1;
+    param->b_opts_write = 1;
 }
 
 static int x264_param_apply_preset( x264_param_t *param, const char *preset )
@@ -966,6 +967,8 @@ int x264_param_parse( x264_param_t *p, const char *name, const char *value )
         p->b_aud = atobool(value);
     OPT("sps-id")
         p->i_sps_id = atoi(value);
+    OPT("opts")
+        p->b_opts_write = atobool(value);
     OPT("global-header")
         p->b_repeat_headers = !atobool(value);
     OPT("repeat-headers")
