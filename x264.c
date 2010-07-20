@@ -805,6 +805,7 @@ static void help( x264_param_t *defaults, int longhelp )
     H1( "      --psnr                  Enable PSNR computation\n" );
     H1( "      --ssim                  Enable SSIM computation\n" );
     H1( "      --threads <integer>     Force a specific number of threads\n" );
+    H1( "      --demuxer-threads <integer> Force a specific number of threads for demuxer (lavf, ffms)\n" );
     H2( "      --sliced-threads        Low-latency but lower-efficiency threading\n" );
     H2( "      --thread-input          Run Avisynth in its own thread\n" );
     H2( "      --sync-lookahead <integer> Number of buffer frames for threaded lookahead\n" );
@@ -870,6 +871,7 @@ enum
     OPT_TIMEBASE,
     OPT_PULLDOWN,
     OPT_LOG_LEVEL,
+    OPT_DEMUXER_THREADS,
     OPT_VIDEO_FILTER,
     OPT_INPUT_FMT,
     OPT_INPUT_RES,
@@ -995,6 +997,7 @@ static struct option long_options[] =
     { "zones",       required_argument, NULL, 0 },
     { "qpfile",      required_argument, NULL, OPT_QPFILE },
     { "threads",     required_argument, NULL, 0 },
+    { "demuxer-threads",   required_argument, NULL, OPT_DEMUXER_THREADS },
     { "sliced-threads",    no_argument, NULL, 0 },
     { "no-sliced-threads", no_argument, NULL, 0 },
     { "slice-max-size",    required_argument, NULL, 0 },
@@ -1416,6 +1419,9 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 break;
             case OPT_THREAD_INPUT:
                 b_thread_input = 1;
+                break;
+            case OPT_DEMUXER_THREADS:
+                input_opt.demuxer_threads = X264_MAX( atoi( optarg ), 1 );
                 break;
             case OPT_QUIET:
                 cli_log_level = param->i_log_level = X264_LOG_NONE;
