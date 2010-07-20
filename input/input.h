@@ -41,6 +41,7 @@ typedef struct
     char *timebase;
     int seek;
     int progress;
+    int demuxer_threads;
 } cli_input_opt_t;
 
 /* properties of the source given by the demuxer */
