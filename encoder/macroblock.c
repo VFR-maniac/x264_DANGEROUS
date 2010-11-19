@@ -941,7 +941,7 @@ int x264_macroblock_probe_skip( x264_t *h, int b_bidir )
 
         /* there is almost never a termination during chroma, but we can't avoid the check entirely */
         /* so instead we check SSD and skip the actual check if the score is low enough. */
-        ssd = h->pixf.ssd[PIXEL_8x8]( p_dst, FDEC_STRIDE, p_src, FENC_STRIDE );
+        ssd = h->pixf.ssd[PIXEL_8x8]( p_dst, FDEC_STRIDE, p_src, FENC_STRIDE, 0 );
         if( ssd < thresh )
             continue;
 
