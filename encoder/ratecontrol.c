@@ -149,6 +149,10 @@ struct x264_ratecontrol_t
     int bframes;                /* # consecutive B-frames before this P-frame */
     int bframe_bits;            /* total cost of those frames */
 
+    /* AQ stuff */
+    FILE *p_aq_debug;
+    void* aqlog;
+
     int i_zones;
     x264_zone_t *zones;
     x264_zone_t *prev_zone;
@@ -161,6 +165,7 @@ struct x264_ratecontrol_t
     uint64_t hrd_multiply_denom;
 };
 
+#include "AQDebugLog.h"
 
 static int parse_zones( x264_t *h );
 static int init_pass2(x264_t *);
@@ -264,6 +269,15 @@ static NOINLINE uint32_t x264_ac_energy_mb( x264_t *h, int mb_x, int mb_y, x264_
     return var;
 }
 
+static int x264_sum_dctq( int16_t dct[64] )
+{
+    int t = 0;
+    int16_t *p = &dct[0];
+    for( int i = 1; i < 64; i++ )
+        t += abs(p[i]) * x264_dct8_weight_tab[i];
+    return t;
+}
+
 void x264_adaptive_quant_frame( x264_t *h, x264_frame_t *frame, float *quant_offsets )
 {
     /* constants chosen to result in approximately the same overall bitrate as without AQ.
@@ -299,6 +313,7 @@ void x264_adaptive_quant_frame( x264_t *h, x264_frame_t *frame, float *quant_off
                     for( int mb_xy = 0; mb_xy < h->mb.i_mb_count; mb_xy++ )
                         frame->i_inv_qscale_factor[mb_xy] = 256;
             }
+            memset( frame->f_aq_energy, 0, h->mb.i_mb_count * sizeof(float) );
         }
         /* Need variance data for weighted prediction */
         if( h->param.analyse.i_weighted_pred )
@@ -313,7 +328,7 @@ void x264_adaptive_quant_frame( x264_t *h, x264_frame_t *frame, float *quant_off
     /* Actual adaptive quantization */
     else
     {
-        if( h->param.rc.i_aq_mode == X264_AQ_AUTOVARIANCE )
+        if( h->param.rc.i_aq_mode == X264_AQ_AUTOMIX )
         {
             float bit_depth_correction = powf(1 << (BIT_DEPTH-8), 0.5f);
             float avg_adj_pow2 = 0.f;
@@ -339,7 +354,7 @@ void x264_adaptive_quant_frame( x264_t *h, x264_frame_t *frame, float *quant_off
             {
                 float qp_adj;
                 int mb_xy = mb_x + mb_y*h->mb.i_mb_stride;
-                if( h->param.rc.i_aq_mode == X264_AQ_AUTOVARIANCE )
+                if( h->param.rc.i_aq_mode == X264_AQ_AUTOMIX )
                 {
                     qp_adj = frame->f_qp_offset[mb_xy];
                     qp_adj = strength * (qp_adj - avg_adj);
@@ -347,7 +362,9 @@ void x264_adaptive_quant_frame( x264_t *h, x264_frame_t *frame, float *quant_off
                 else
                 {
                     uint32_t energy = x264_ac_energy_mb( h, mb_x, mb_y, frame );
-                    qp_adj = strength * (x264_log2( X264_MAX(energy, 1) ) - (14.427f + 2*(BIT_DEPTH-8)));
+                    float f_aq_energy = x264_log2( X264_MAX(energy, 1) ) - (4.427f + 2*(BIT_DEPTH-8));
+                    qp_adj = strength * (f_aq_energy - h->param.rc.f_aq_sensitivity);
+                    frame->f_aq_energy[mb_xy] = f_aq_energy;
                 }
                 if( quant_offsets )
                     qp_adj += quant_offsets[mb_xy];
@@ -403,6 +420,8 @@ int x264_macroblock_tree_read( x264_t *h, x264_frame_t *frame, float *quant_offs
                 frame->i_inv_qscale_factor[i] = x264_exp2fix8(frame->f_qp_offset[i]);
         }
         rc->qpbuf_pos--;
+
+        memset( frame->f_aq_energy, 0, h->mb.i_mb_count * sizeof(float) );
     }
     else
         x264_stack_align( x264_adaptive_quant_frame, h, frame, quant_offsets );
@@ -978,6 +997,22 @@ parse_error:
         rc->qpbuf_pos = -1;
     }
 
+    /* Open AQ Log file */
+    if( h->param.rc.b_aq_debug )
+    {
+        rc->p_aq_debug = fopen( h->param.rc.psz_aq_debug_name, "wb" );
+        if( rc->p_aq_debug == NULL )
+        {
+            x264_log(h, X264_LOG_ERROR, "ratecontrol_init: can't open AQ debug file\n");
+            return -1;
+        }
+        setvbuf( rc->p_aq_debug, NULL, _IOFBF, 1024*1024*8 ); // 8M Buffer
+        x264_write_aqlog_header( h, "MixAQ03", 0,
+                                 &h->param.rc.f_aq_strength, &h->param.rc.f_aq2_strength,
+                                 h->param.rc.f_aq_sensitivity, h->param.rc.f_aq2_sensitivity,
+                                 NULL );
+    }
+
     for( int i = 0; i<h->param.i_threads; i++ )
     {
         h->thread[i]->rc = rc+i;
@@ -1179,6 +1214,8 @@ void x264_ratecontrol_delete( x264_t *h )
                 rc->zones[i].param->param_free( rc->zones[i].param );
         x264_free( rc->zones );
     }
+    if( rc->p_aq_debug )
+        fclose( rc->p_aq_debug );
     x264_free( rc );
 }
 
@@ -1476,19 +1513,83 @@ int x264_ratecontrol_qp( x264_t *h )
     return x264_clip3( h->rc->qpm + 0.5f, h->param.rc.i_qp_min, h->param.rc.i_qp_max );
 }
 
+static NOINLINE float x264_haali_adaptive_quant( x264_t *h, float *_energy )
+{
+    ALIGNED_16( static uint8_t zero[FDEC_STRIDE*8] );
+    ALIGNED_16( int16_t dct[64] );
+    float fc, qp_adj;
+    int total = 0;
+    int new_qp;
+
+    if( h->mb.i_qp <= 10 ) /* AQ is probably not needed at such low QP */
+        return 0;
+
+    if( h->pixf.sad[PIXEL_16x16](h->mb.pic.p_fenc[0], FENC_STRIDE, zero, 16) > 64*16*16 ) /* light places? */
+        if( h->pixf.count_8x8(h->mb.pic.p_fenc[1], FENC_STRIDE, 0x81818181) < 40 /* not enough "blue" pixels? */ ||
+            h->pixf.count_8x8(h->mb.pic.p_fenc[2], FENC_STRIDE, 0x87878787) > 24 /* too many "red" pixels? */ )
+        {
+            x264_emms();
+            return 0;
+        }
+
+    for( int i = 0; i < 4; i++ )
+    {
+        h->dctf.sub8x8_dct8( dct, h->mb.pic.p_fenc[0] + (i&1)*8 + (i>>1)*FENC_STRIDE, zero );
+        total += x264_sum_dctq( dct );
+    }
+
+    x264_emms();
+
+    if( total == 0 ) /* no AC coefficients, nothing to do */
+        return 0;
+
+    *_energy = fc = expf( -5e-13 * total * total );
+
+    /* the function is chosen such that it stays close to 0 in almost all
+     * range of 0..1, and rapidly goes up to 1 near 1.0 */
+    qp_adj = h->rc->qpm * h->param.rc.f_aq2_strength / pow( 2 - fc, h->param.rc.f_aq2_sensitivity );
+
+    /* don't adjust by more than this amount */
+    qp_adj = X264_MIN( qp_adj, h->rc->qpm / 2.f );
+
+    new_qp = x264_clip3( h->rc->qpm - qp_adj, h->param.rc.i_qp_min, h->param.rc.i_qp_max );
+
+    return new_qp - h->rc->qpm;
+}
+
 int x264_ratecontrol_mb_qp( x264_t *h )
 {
     x264_emms();
     float qp = h->rc->qpm;
-    if( h->param.rc.i_aq_mode )
+    if( !h->param.rc.i_aq_mode )
+        return x264_clip3( qp + 0.5f, h->param.rc.i_qp_min, h->param.rc.i_qp_max );
+
+    /* MB-tree currently doesn't adjust quantizers in unreferenced frames. */
+    float qp_offset = h->fdec->b_kept_as_ref ? h->fenc->f_qp_offset[h->mb.i_mb_xy] : h->fenc->f_qp_offset_aq[h->mb.i_mb_xy];
+
+    float vaq_energy = h->fenc->f_aq_energy[h->mb.i_mb_xy];
+    float haq_energy = 0.f;
+    if( h->param.rc.b_aq2 )
     {
-         /* MB-tree currently doesn't adjust quantizers in unreferenced frames. */
-        float qp_offset = h->fdec->b_kept_as_ref ? h->fenc->f_qp_offset[h->mb.i_mb_xy] : h->fenc->f_qp_offset_aq[h->mb.i_mb_xy];
-        /* Scale AQ's effect towards zero in emergency mode. */
-        if( qp > QP_MAX_SPEC )
-            qp_offset *= (QP_MAX - qp) / (QP_MAX - QP_MAX_SPEC);
-        qp += qp_offset;
+        float haq_offset = x264_haali_adaptive_quant( h, &haq_energy );
+        if( qp_offset >= 0.f )
+            qp_offset += haq_offset;
+        else
+            qp_offset = X264_MIN( qp_offset, haq_offset );
     }
+    if( h->param.rc.b_aq_debug )
+        x264_write_aqlog_body( h, h->mb.i_mb_xy, h->fenc, h->param.rc.i_aq_mode, h->param.rc.b_aq2, vaq_energy, haq_energy );
+
+    qp_offset *= h->sh.i_type == SLICE_TYPE_I ? h->param.rc.f_aq_ifactor
+               : h->sh.i_type == SLICE_TYPE_P ? h->param.rc.f_aq_pfactor
+               : h->sh.i_type == SLICE_TYPE_B ? h->param.rc.f_aq_bfactor
+               : 1.f;
+
+    /* Scale AQ's effect towards zero in emergency mode. */
+    if( qp > QP_MAX_SPEC )
+        qp_offset *= (QP_MAX - qp) / (QP_MAX - QP_MAX_SPEC);
+    qp += qp_offset;
+
     return x264_clip3( qp + 0.5f, h->param.rc.i_qp_min, h->param.rc.i_qp_max );
 }
 
