@@ -830,6 +830,13 @@ struct x264_t
             /* Metrics */
             int64_t i_ssd[3];
             double f_ssim;
+
+            /* AQ stats per frame */
+            uint64_t i_aq_count[5];
+            uint64_t i_aq_result[5][3];
+            uint64_t i_aq_change[2*QP_MAX_SPEC+1];
+            int i_aq_change_min;
+            int i_aq_change_max;
         } frame;
 
         /* Cumulated stats */
@@ -860,6 +867,13 @@ struct x264_t
         int     i_direct_frames[2];
         /* num p-frames weighted */
         int     i_wpred[2];
+        /* */
+        uint64_t i_aq_count_total;
+        uint64_t i_aq_count[5];
+        uint64_t i_aq_result[5][3];
+        uint64_t i_aq_change[2*QP_MAX_SPEC+1];
+        int i_aq_change_min;
+        int i_aq_change_max;
 
     } stat;
 

@@ -70,6 +70,14 @@ PIXEL_SAD_C( x264_pixel_sad_8x4,    8,  4 )
 PIXEL_SAD_C( x264_pixel_sad_4x8,    4,  8 )
 PIXEL_SAD_C( x264_pixel_sad_4x4,    4,  4 )
 
+static int x264_pixel_count_8x8( uint8_t *pix, int i_pix, uint32_t threshold )
+{
+    int sum = 0;
+    for( int y = 0; y < 8; y++, pix += i_pix )
+        for( int x = 0; x < 8; x++ )
+            sum += pix[x] > (uint8_t)threshold;
+    return sum;
+}
 
 /****************************************************************************
  * pixel_ssd_WxH
@@ -847,6 +855,7 @@ void x264_pixel_init( int cpu, x264_pixel_function_t *pixf )
     pixf->ssim_end4 = ssim_end4;
     pixf->var2_8x8 = pixel_var2_8x8;
     pixf->vsad = pixel_vsad;
+    pixf->count_8x8 = x264_pixel_count_8x8;
 
     pixf->intra_sad_x3_4x4    = x264_intra_sad_x3_4x4;
     pixf->intra_satd_x3_4x4   = x264_intra_satd_x3_4x4;
