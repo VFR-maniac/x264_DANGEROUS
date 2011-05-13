@@ -42,6 +42,8 @@
 #include "x264_config.h"
 
 #define X264_BUILD 115
+#define X264_SUB_BUILD 2 // OreAQ
+#define X264_AQ_MODE_ORE05 0x00000004
 
 /* x264_t:
  *      opaque handler for encoder */
@@ -149,8 +151,8 @@ typedef struct
 #define X264_RC_ABR                  2
 #define X264_QP_AUTO                 0
 #define X264_AQ_NONE                 0
-#define X264_AQ_VARIANCE             1
-#define X264_AQ_AUTOVARIANCE         2
+#define X264_AQ_ORE                  1
+#define X264_AQ_MIXORE               2
 #define X264_B_ADAPT_NONE            0
 #define X264_B_ADAPT_FAST            1
 #define X264_B_ADAPT_TRELLIS         2
@@ -371,6 +373,15 @@ typedef struct x264_param_t
 
         int         i_aq_mode;      /* psy adaptive QP. (X264_AQ_*) */
         float       f_aq_strength;
+        float       f_aq_strengths[2][4];   /* Up{ Bright, Middle, Dark, M.Dark }, Down{ Bright, Middle, Dark, Other stuff } */
+        float       f_aq_sensitivity;
+        float       f_aq_ifactor[2]; /* { Up, Down } */
+        float       f_aq_pfactor[2]; /* { Up, Down } */
+        float       f_aq_bfactor[2]; /* { Up, Down } */
+        int         b_aq_boundary;
+        int         i_aq_boundary[3];
+        int         b_aq_debug;
+        char        *psz_aq_debug_name;
         float       f_fade_compensate; /* Give more bits to fades. */
         int         b_mb_tree;      /* Macroblock-tree ratecontrol. */
         int         i_lookahead;
