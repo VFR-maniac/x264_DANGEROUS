@@ -7,3 +7,6 @@
 [submodule "vo-amrwbenc"]
 	path = vo-amrwbenc
 	url = git://github.com/VFR-maniac/vo-amrwbenc.git
+[submodule "bzip2"]
+	path = bzip2
+	url = git://github.com/VFR-maniac/bzip2.git
