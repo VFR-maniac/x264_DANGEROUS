@@ -1,3 +1,6 @@
 [submodule "opencore-amr"]
 	path = opencore-amr
 	url = git://github.com/VFR-maniac/opencore-amr.git
+[submodule "vo-aacenc"]
+	path = vo-aacenc
+	url = git://github.com/VFR-maniac/vo-aacenc.git
