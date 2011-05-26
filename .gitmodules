@@ -4,3 +4,6 @@
 [submodule "vo-aacenc"]
 	path = vo-aacenc
 	url = git://github.com/VFR-maniac/vo-aacenc.git
+[submodule "vo-amrwbenc"]
+	path = vo-amrwbenc
+	url = git://github.com/VFR-maniac/vo-amrwbenc.git
