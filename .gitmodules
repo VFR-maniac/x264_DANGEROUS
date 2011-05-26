@@ -10,3 +10,6 @@
 [submodule "bzip2"]
 	path = bzip2
 	url = git://github.com/VFR-maniac/bzip2.git
+[submodule "zlib"]
+	path = zlib
+	url = git://github.com/VFR-maniac/zlib.git
