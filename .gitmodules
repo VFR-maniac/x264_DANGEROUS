@@ -1,0 +1,3 @@
+[submodule "opencore-amr"]
+	path = opencore-amr
+	url = git://github.com/VFR-maniac/opencore-amr.git
