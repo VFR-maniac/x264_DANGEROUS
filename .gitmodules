@@ -13,3 +13,6 @@
 [submodule "zlib"]
 	path = zlib
 	url = git://github.com/VFR-maniac/zlib.git
+[submodule "ffmpegsource"]
+	path = ffmpegsource
+	url = git://github.com/VFR-maniac/ffmpegsource.git
