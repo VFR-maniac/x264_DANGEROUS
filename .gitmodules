@@ -22,3 +22,6 @@
 [submodule "lame"]
 	path = lame
 	url = git://github.com/VFR-maniac/lame.git
+[submodule "libav"]
+	path = libav
+	url = git://github.com/VFR-maniac/libav.git
