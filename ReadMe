@@ -1,0 +1,17 @@
+#!/bin/bash
+
+#  Run this script for cloning the repository
+#  because simple 'git clone' will breaks the revision numbering.
+#  The name of created repository will be x264_DANGEROUS.
+
+
+workdir=x264_DANGEROUS
+plain_repo=git://git.videolan.org/x264.git
+dangerous_repo=git://github.com/VFR-maniac/x264_DANGEROUS.git
+plain_remote=porigin
+
+git clone $dangerous_repo $workdir
+cd $workdir
+git remote add $plain_remote $plain_repo
+git fetch $plain_remote
+git branch plain $plain_remote/master
