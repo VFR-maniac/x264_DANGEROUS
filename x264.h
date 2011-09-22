@@ -420,6 +420,7 @@ typedef struct x264_param_t
     uint32_t i_fps_den;
     uint32_t i_timebase_num;    /* Timebase numerator */
     uint32_t i_timebase_den;    /* Timebase denominator */
+    int b_opts_write;
 
     int b_tff;
 
