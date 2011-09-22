@@ -42,6 +42,7 @@
 #include "x264_config.h"
 
 #define X264_BUILD 129
+#define X264_SUB_BUILD 1 // MixAQ
 
 /* Application developers planning to link against a shared library version of
  * libx264 from a Microsoft Visual Studio or similar development environment
@@ -168,8 +169,8 @@ typedef struct
 #define X264_RC_ABR                  2
 #define X264_QP_AUTO                 0
 #define X264_AQ_NONE                 0
-#define X264_AQ_VARIANCE             1
-#define X264_AQ_AUTOVARIANCE         2
+#define X264_AQ_MIX                  1
+#define X264_AQ_AUTOMIX              2
 #define X264_B_ADAPT_NONE            0
 #define X264_B_ADAPT_FAST            1
 #define X264_B_ADAPT_TRELLIS         2
@@ -406,6 +407,15 @@ typedef struct x264_param_t
 
         int         i_aq_mode;      /* psy adaptive QP. (X264_AQ_*) */
         float       f_aq_strength;
+        float       f_aq_sensitivity;
+        float       f_aq_ifactor;
+        float       f_aq_pfactor;
+        float       f_aq_bfactor;
+        int         b_aq2;          /* psy 2nd adaptive QP */
+        float       f_aq2_strength;
+        float       f_aq2_sensitivity;
+        int         b_aq_debug;
+        char        *psz_aq_debug_name;
         float       f_fade_compensate; /* Give more bits to fades. */
         int         b_mb_tree;      /* Macroblock-tree ratecontrol. */
         int         i_lookahead;
