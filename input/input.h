@@ -42,6 +42,7 @@ typedef struct
     int seek;
     int progress;
     int output_csp; /* convert to this csp, if applicable */
+    int demuxer_threads;
 } cli_input_opt_t;
 
 /* properties of the source given by the demuxer */
