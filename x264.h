@@ -250,6 +250,14 @@ typedef struct
     struct x264_param_t *param;
 } x264_zone_t;
 
+/* Auto VBV*/
+#define X264_VBV_MAXRATE_HIGH10 -3 /* Set the VBV maxrate to fit in the target level of High10 Profile */
+#define X264_VBV_MAXRATE_HIGH   -2 /* Set the VBV maxrate to fit in the target level of High Profile */
+#define X264_VBV_MAXRATE_MAIN   -1 /* Set the VBV maxrate to fit in the target level of Main Profile */
+#define X264_VBV_BUFSIZE_HIGH10 -3 /* Set the VBV bufsize to fit in the target level of High10 Profile */
+#define X264_VBV_BUFSIZE_HIGH   -2 /* Set the VBV bufsize to fit in the target level of High Profile */
+#define X264_VBV_BUFSIZE_MAIN   -1 /* Set the VBV bufsize to fit in the target level of Main Profile */
+
 typedef struct x264_param_t
 {
     /* CPU flags */
