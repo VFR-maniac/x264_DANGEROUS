@@ -1773,6 +1773,481 @@ const static mp4sys_importer_functions mp4sys_eac3_importer =
 };
 
 /***************************************************************************
+    DTS importer
+***************************************************************************/
+#define DTS_TYPE_NONE   0
+#define DTS_TYPE_NORMAL 1
+#define DTS_TYPE_HD     2
+
+#define DTS_HD_TYPE_NONE            0
+#define DTS_HD_TYPE_UNKNOWN         1
+#define DTS_HD_TYPE_EXPRESS         2
+#define DTS_HD_TYPE_HIGH_RESOLUTION 3
+#define DTS_HD_TYPE_MASTER_AUDIO    4
+
+#define DTS_MIN_FRAME_SIZE    96
+#define DTS_MAX_FRAME_SIZE    16384
+#define DTS_HD_MAX_FRAME_SIZE 32768
+
+typedef struct
+{
+    mp4sys_importer_status status;
+    uint8_t  type;
+    uint8_t  prev_type;
+    uint8_t  hd_type;
+    uint8_t  sample_count;
+    uint8_t  num_of_pcm_sample_blocks;
+    uint8_t  audio_channel_arrangement;
+    uint8_t  extension_channel_arrangement;
+    uint8_t  channels_added;
+    uint8_t  lfe_present;
+    uint8_t  resolution;
+    uint32_t sampling_frequency;
+    uint32_t frame_size;
+    lsmash_bits_t *bits;
+    uint8_t  buffer[DTS_HD_MAX_FRAME_SIZE];
+    uint8_t *au;
+    uint32_t au_length;
+    uint8_t *incomplete_au;
+    uint32_t incomplete_au_length;
+    uint8_t *au_buffer;
+    uint32_t au_buffer_size;
+    uint32_t au_number;
+} mp4sys_dts_info_t;
+
+static void mp4sys_remove_dts_info( mp4sys_dts_info_t *info )
+{
+    if( !info )
+        return;
+    if( info->au_buffer )
+        free( info->au_buffer );
+    lsmash_bits_adhoc_cleanup( info->bits );
+    free( info );
+}
+
+static mp4sys_dts_info_t *mp4sys_create_dts_info( void )
+{
+    mp4sys_dts_info_t *info = (mp4sys_dts_info_t *)malloc( sizeof(mp4sys_dts_info_t) );
+    if( !info )
+        return NULL;
+    memset( info, 0, sizeof(mp4sys_dts_info_t) );
+    info->bits = lsmash_bits_adhoc_create();
+    if( !info->bits )
+    {
+        free( info );
+        return NULL;
+    }
+    info->hd_type = DTS_HD_TYPE_NONE;
+    return info;
+}
+
+static void mp4sys_dts_cleanup( mp4sys_importer_t *importer )
+{
+    debug_if( importer && importer->info )
+        mp4sys_remove_dts_info( importer->info );
+}
+
+static int dts_read_frame( mp4sys_importer_t *importer )
+{
+#define DTS_FIRST_TEN_BYTES      10
+#define DTS_SYNCWORDS_BE         0x7FFE8001
+#define DTS_HD_SYNCWORDS_BE      0x64582025
+#define DTS_XCH_SYNCWORDS_BE     0x5A5A5A5A
+#define DTS_X96K_SYNCWORDS_BE    0x1D95F262
+#define DTS_XXCH_SYNCWORDS_BE    0x47004A03
+#define DTS_HD_XSA_SYNCWORDS_BE  0x0A801921
+#define DTS_HD_XLL_SYNCWORDS_BE  0x41A29547
+#define DTS_HD_XBR_SYNCWORDS_BE  0x655E315E
+#define DTS_HD_XCH_SYNCWORDS_BE  DTS_XCH_SYNCWORDS_BE
+#define DTS_HD_X96K_SYNCWORDS_BE DTS_X96K_SYNCWORDS_BE
+#define DTS_HD_XXCH_SYNCWORDS_BE DTS_XXCH_SYNCWORDS_BE
+    mp4sys_dts_info_t *info = (mp4sys_dts_info_t *)importer->info;
+    uint32_t read_size = fread( info->buffer, 1, DTS_FIRST_TEN_BYTES, importer->stream );
+    if( read_size == 0 )
+        return 1;       /* EOF */
+    else if( read_size != DTS_FIRST_TEN_BYTES )
+        return -1;
+    lsmash_bits_t *bits = info->bits;
+    if( lsmash_bits_import_data( bits, info->buffer, DTS_FIRST_TEN_BYTES ) )
+        return -1;
+    uint32_t sync_word = lsmash_bits_get( bits, 32 );                       /* SYNC            (32) */
+    switch( sync_word )
+    {
+        case DTS_SYNCWORDS_BE :
+            info->type = DTS_TYPE_NORMAL;
+            break;
+        case DTS_HD_SYNCWORDS_BE :
+            if( info->prev_type != DTS_TYPE_NORMAL )
+                return -1;
+            info->type = DTS_TYPE_HD;
+            info->hd_type = DTS_HD_TYPE_UNKNOWN;
+            break;
+        default :
+            return -1;
+    }
+    /* Parse frame header. */
+    if( info->type == DTS_TYPE_NORMAL )
+    {
+        lsmash_bits_get( bits, 1 );                                         /* FTYPE           (1) */
+        info->sample_count = lsmash_bits_get( bits, 5 ) + 1;                /* SHORT           (5) */
+        uint8_t crc_present_flag = lsmash_bits_get( bits, 1 );              /* CPF             (1) */
+        uint32_t dts_header_size = 13 + crc_present_flag * 2;
+        info->num_of_pcm_sample_blocks = lsmash_bits_get( bits, 7 ) + 1;    /* NBLKS           (7) */
+        if( info->num_of_pcm_sample_blocks <= 5 )
+            return -1;
+        info->frame_size = lsmash_bits_get( bits, 14 ) + 1;                 /* FSIZE           (14) */
+        if( info->frame_size < DTS_MIN_FRAME_SIZE )
+            return -1;
+        info->audio_channel_arrangement = lsmash_bits_get( bits, 6 );       /* AMODE           (6) */
+        uint8_t core_audio_sampling_frequency = lsmash_bits_get( bits, 4 ); /* SFREQ           (4) */
+        static const uint32_t dts_sampling_frequency_table[16] = { 0, 8000, 16000, 32000, 0, 0, 11025, 22050, 44100, 0, 0, 12000, 24000, 48000, 0, 0 };
+        info->sampling_frequency = dts_sampling_frequency_table[core_audio_sampling_frequency];
+        if( info->sampling_frequency == 0 )
+            return -1;      /* invalid */
+        lsmash_bits_empty( bits );                                          /* Skip remainder 10 bits.
+                                                                             * RATE            (5)
+                                                                             * MIX             (1)
+                                                                             * DYNF            (1)
+                                                                             * TIMEF           (1)
+                                                                             * AUXF            (1)
+                                                                             * HDCD            (1) */
+        read_size = info->frame_size - DTS_FIRST_TEN_BYTES;
+        if( fread( info->buffer + DTS_FIRST_TEN_BYTES, 1, read_size, importer->stream ) != read_size )
+            return -1;
+        /* Continue to parse frame. */
+        if( lsmash_bits_import_data( bits, info->buffer + DTS_FIRST_TEN_BYTES, read_size ) )
+            return -1;
+        uint8_t extension_audio_descriptor = lsmash_bits_get( bits, 3 );    /* EXT_AUDIO_ID    (3) */
+        uint8_t extended_coding_flag = lsmash_bits_get( bits, 1 );          /* EXT_AUDIO       (1) */
+        lsmash_bits_get( bits, 1 );                                         /* ASPF            (1) */
+        uint8_t low_frequency_effects_flag = lsmash_bits_get( bits, 2 );    /* LFF             (2) */
+        if( low_frequency_effects_flag == 0x3 )
+            return -1;      /* invalid */
+        info->lfe_present = !!low_frequency_effects_flag;
+        lsmash_bits_get( bits, 8 + crc_present_flag * 16 );                 /* HFLAG           (1)
+                                                                             * HCRC            (16)
+                                                                             * FILTS           (1)
+                                                                             * VERNUM          (4)
+                                                                             * CHIST           (2) */
+        uint8_t source_pcm_resolution = lsmash_bits_get( bits, 3 );         /* PCMR            (3) */
+        static const uint32_t dts_source_resolution_table[8] = { 16, 16, 20, 20, 0, 24, 24, 0 };
+        info->resolution = dts_source_resolution_table[source_pcm_resolution];
+        if( info->resolution == 0 )
+            return -1;      /* invalid */
+        lsmash_bits_get( bits, 6 );                                         /* SUMF            (1)
+                                                                             * SUMS            (1)
+                                                                             * DIALNORM/UNSPEC (4) */
+        lsmash_bits_empty( bits );
+        if( extended_coding_flag )
+        {
+            uint8_t *frame_end = info->buffer + info->frame_size;
+            for( uint8_t *pos = info->buffer + dts_header_size; pos + 3 < frame_end; pos++ )
+            {
+                sync_word = (pos[0] << 24) | (pos[1] << 16) | (pos[2] << 8) | pos[3];
+                switch( sync_word )
+                {
+                    case DTS_XCH_SYNCWORDS_BE :
+                    {
+                        uint32_t xch_frame_size = (uint32_t)((pos[4] << 2) | ((pos[5] >> 6) & 0x3)) + 1;
+                        if( pos + xch_frame_size != frame_end )
+                            break;      /* Encountered four emulation bytes (pseudo sync word). */
+                        if( (pos + 5 >= frame_end)
+                         || (extension_audio_descriptor != 0 && extension_audio_descriptor != 3) )
+                            return -1;
+                        info->extension_channel_arrangement = (pos[5] >> 2) & 0xf;  /* AMODE (4) */
+                        if( info->extension_channel_arrangement != 1 )
+                            return -1;
+                        break;
+                    }
+                    case DTS_X96K_SYNCWORDS_BE :
+                        if( (pos + 5 >= frame_end)
+                         || (extension_audio_descriptor != 2 && extension_audio_descriptor != 3) )
+                            return -1;
+                        info->sampling_frequency *= 2;
+                        break;
+                    case DTS_XXCH_SYNCWORDS_BE :
+                        if( (pos + 5 >= frame_end) || (extension_audio_descriptor != 6) )
+                            return -1;
+                        info->channels_added = (pos[5] >> 6) & 0x3;
+                        if( info->channels_added == 0 || info->channels_added == 3 )
+                            return -1;
+                    default :
+                        break;
+                }
+            }
+        }
+    }
+    else /* if( info->type == DTS_TYPE_HD ) */
+    {
+        lsmash_bits_get( bits, 10 );                                        /* unknown            (8)
+                                                                             * Substream Index    (2) */
+        int blown_up = lsmash_bits_get( bits, 1 ) * 4;                      /* is Blown Up Header (1) */
+        uint32_t header_size = lsmash_bits_get( bits, 8 + blown_up );       /* Header Size        (8 or 12) */
+        info->frame_size = lsmash_bits_get( bits, 16 + blown_up ) + 1;      /* HD Block Size      (16 or 20) */
+        lsmash_bits_empty( bits );
+        read_size = info->frame_size - DTS_FIRST_TEN_BYTES;
+        if( fread( info->buffer + DTS_FIRST_TEN_BYTES, 1, read_size, importer->stream ) != read_size )
+            return -1;
+        /* Continue to parse frame header. */
+        uint8_t *frame_end = info->buffer + info->frame_size;
+        for( uint8_t *pos = info->buffer + header_size; pos + 3 < frame_end; pos++ )
+        {
+            sync_word = (pos[0] << 24) | (pos[1] << 16) | (pos[2] << 8) | pos[3];
+            switch( sync_word )
+            {
+                case DTS_HD_XSA_SYNCWORDS_BE :
+                    info->hd_type = LSMASH_MAX( DTS_HD_TYPE_EXPRESS, info->hd_type );
+                    break;
+                case DTS_HD_XLL_SYNCWORDS_BE :
+                    info->hd_type = DTS_HD_TYPE_MASTER_AUDIO;
+                    break;
+                case DTS_HD_X96K_SYNCWORDS_BE :
+                    info->sampling_frequency *= 2;
+                    info->hd_type = LSMASH_MAX( DTS_HD_TYPE_HIGH_RESOLUTION, info->hd_type );
+                    break;
+                case DTS_HD_XCH_SYNCWORDS_BE :
+                    info->extension_channel_arrangement = 1;
+                    info->hd_type = LSMASH_MAX( DTS_HD_TYPE_HIGH_RESOLUTION, info->hd_type );
+                    break;
+                case DTS_HD_XXCH_SYNCWORDS_BE :
+                    if( pos + 5 >= frame_end )
+                        return -1;
+                    info->hd_type = LSMASH_MAX( DTS_HD_TYPE_HIGH_RESOLUTION, info->hd_type );
+                    info->channels_added = (pos[5] >> 6) & 0x3;
+                    if( info->channels_added == 0 || info->channels_added == 3 )
+                        return -1;
+                    break;
+                case DTS_HD_XBR_SYNCWORDS_BE :
+                    info->hd_type = LSMASH_MAX( DTS_HD_TYPE_HIGH_RESOLUTION, info->hd_type );
+                    break;
+                default :
+                    break;
+            }
+        }
+    }
+    return 0;
+}
+
+static lsmash_audio_summary_t *dts_create_summary( mp4sys_dts_info_t *info )
+{
+    lsmash_audio_summary_t *summary = (lsmash_audio_summary_t *)lsmash_create_summary( MP4SYS_STREAM_TYPE_AudioStream );
+    if( !summary )
+        return NULL;
+    /* We don't know how to store DTS Audio stream into ISO Base Media file format defined in DTS Document #9302J81100.
+     * Therefore, the followings might be invalid. */
+    switch( info->hd_type )
+    {
+        case DTS_HD_TYPE_NONE :
+            summary->sample_type            = ISOM_CODEC_TYPE_DTSC_AUDIO;
+            summary->object_type_indication = MP4SYS_OBJECT_TYPE_DTSC_AUDIO;
+            summary->max_au_length          = DTS_MAX_FRAME_SIZE;
+            break;
+        case DTS_HD_TYPE_EXPRESS :
+            summary->sample_type            = ISOM_CODEC_TYPE_DTSE_AUDIO;
+            summary->object_type_indication = MP4SYS_OBJECT_TYPE_DTSE_AUDIO;
+            summary->max_au_length          = DTS_MAX_FRAME_SIZE + DTS_HD_MAX_FRAME_SIZE;
+            break;
+        case DTS_HD_TYPE_HIGH_RESOLUTION :
+            summary->sample_type            = ISOM_CODEC_TYPE_DTSH_AUDIO;
+            summary->object_type_indication = MP4SYS_OBJECT_TYPE_DTSH_AUDIO;
+            summary->max_au_length          = DTS_MAX_FRAME_SIZE + DTS_HD_MAX_FRAME_SIZE;
+            break;
+        case DTS_HD_TYPE_MASTER_AUDIO :
+            summary->sample_type            = ISOM_CODEC_TYPE_DTSL_AUDIO;
+            summary->object_type_indication = MP4SYS_OBJECT_TYPE_DTSL_AUDIO;
+            summary->max_au_length          = DTS_MAX_FRAME_SIZE + DTS_HD_MAX_FRAME_SIZE;
+            break;
+        case DTS_HD_TYPE_UNKNOWN :
+            /* Could QuickTime file format store in any CODEC? */
+            summary->sample_type            = QT_CODEC_TYPE_DTS_AUDIO;
+            summary->object_type_indication = MP4SYS_OBJECT_TYPE_NONE;
+            summary->max_au_length          = DTS_MAX_FRAME_SIZE + DTS_HD_MAX_FRAME_SIZE;
+            break;
+        default :
+            lsmash_cleanup_summary( (lsmash_summary_t *)summary );
+            return NULL;
+    }
+    summary->aot              = MP4A_AUDIO_OBJECT_TYPE_NULL;  /* no effect */
+    summary->bit_depth        = info->resolution;
+    summary->samples_in_frame = info->sample_count * info->num_of_pcm_sample_blocks;
+    summary->sbr_mode         = MP4A_AAC_SBR_NOT_SPECIFIED;   /* no effect */
+    summary->frequency        = info->sampling_frequency;
+    if( info->extension_channel_arrangement )
+    {
+        summary->channels   = 6 + info->lfe_present;
+        summary->layout_tag = info->lfe_present ? QT_CHANNEL_LAYOUT_AAC_6_0 : QT_CHANNEL_LAYOUT_DTS_6_1_D;
+    }
+    else if( info->channels_added )
+    {
+        summary->channels = 5 + info->channels_added + info->lfe_present;
+        if( info->channels_added == 1 )
+            summary->layout_tag = QT_CHANNEL_LAYOUT_UNKNOWN;        /* FIXME */
+        else /* if( info->channels_added == 2 ) */
+            summary->layout_tag = info->lfe_present ? QT_CHANNEL_LAYOUT_DTS_7_1 : QT_CHANNEL_LAYOUT_DTS_7_0;
+    }
+    else if( info->audio_channel_arrangement < 16 )
+    {
+        static const uint32_t dts_channel_count_table[16] = { 1, 2, 2, 2, 2, 3, 3, 4, 4, 5, 6, 6, 6, 7, 8, 8 };
+        static const lsmash_channel_layout_tag dts_channel_layout_table[16][2] =
+        {
+            /*      LFE: off                         LFE: on                */
+            { QT_CHANNEL_LAYOUT_MONO,          QT_CHANNEL_LAYOUT_AC3_1_0_1  },
+            { QT_CHANNEL_LAYOUT_UNKNOWN,       QT_CHANNEL_LAYOUT_UNKNOWN    },      /* FIXME: dual mono */
+            { QT_CHANNEL_LAYOUT_STEREO,        QT_CHANNEL_LAYOUT_DVD_4      },
+            { QT_CHANNEL_LAYOUT_MID_SIDE,      QT_CHANNEL_LAYOUT_UNKNOWN    },
+            { QT_CHANNEL_LAYOUT_MATRIX_STEREO, QT_CHANNEL_LAYOUT_UNKNOWN    },
+            { QT_CHANNEL_LAYOUT_MPEG_3_0_B,    QT_CHANNEL_LAYOUT_DTS_3_1    },
+            { QT_CHANNEL_LAYOUT_DVD_2,         QT_CHANNEL_LAYOUT_AC3_2_1_1  },
+            { QT_CHANNEL_LAYOUT_MPEG_4_0_B,    QT_CHANNEL_LAYOUT_DTS_4_1    },
+            { QT_CHANNEL_LAYOUT_DVD_3,         QT_CHANNEL_LAYOUT_DVD_18     },
+            { QT_CHANNEL_LAYOUT_MPEG_5_0_D,    QT_CHANNEL_LAYOUT_MPEG_5_1_D },
+            { QT_CHANNEL_LAYOUT_DTS_6_0_A,     QT_CHANNEL_LAYOUT_DTS_6_1_A  },
+            { QT_CHANNEL_LAYOUT_DTS_6_0_B,     QT_CHANNEL_LAYOUT_DTS_6_1_B  },
+            { QT_CHANNEL_LAYOUT_DTS_6_0_C,     QT_CHANNEL_LAYOUT_DTS_6_1_C  },
+            { QT_CHANNEL_LAYOUT_DTS_7_0,       QT_CHANNEL_LAYOUT_DTS_7_1    },
+            { QT_CHANNEL_LAYOUT_DTS_8_0_A,     QT_CHANNEL_LAYOUT_DTS_8_1_A  },
+            { QT_CHANNEL_LAYOUT_DTS_8_0_B,     QT_CHANNEL_LAYOUT_DTS_8_1_B  }
+        };
+        summary->channels   = dts_channel_count_table[ info->audio_channel_arrangement ] + info->lfe_present;
+        summary->layout_tag = dts_channel_layout_table[ info->audio_channel_arrangement ][ info->lfe_present ];
+    }
+    else
+    {
+        /* User defined */
+        summary->channels   = 0;
+        summary->layout_tag = QT_CHANNEL_LAYOUT_UNKNOWN;
+    }
+    return summary;
+}
+
+static int dts_get_next_accessunit_internal( mp4sys_importer_t *importer )
+{
+    int complete_au = 0;
+    mp4sys_dts_info_t *info = (mp4sys_dts_info_t *)importer->info;
+    while( 1 )
+    {
+        int ret = dts_read_frame( importer );
+        if( ret == -1 )
+            return -1;
+        else if( ret == 1 )
+        {
+            info->status = MP4SYS_IMPORTER_EOF;
+            complete_au = 1;
+        }
+        else
+        {
+            if( info->prev_type != DTS_TYPE_NONE && info->type == DTS_TYPE_NORMAL )
+                complete_au = 1;
+        }
+        if( complete_au )
+        {
+            memcpy( info->au, info->incomplete_au, info->incomplete_au_length );
+            info->au_length = info->incomplete_au_length;
+            info->incomplete_au_length = 0;
+            if( info->status == MP4SYS_IMPORTER_EOF )
+                break;
+        }
+        if( info->incomplete_au_length + info->frame_size > info->au_buffer_size )
+        {
+            /* Increase buffer size to store AU. */
+            uint32_t old_au_buffer_size = info->au_buffer_size;
+            uint32_t new_au_buffer_size = 2 * info->frame_size;
+            uint8_t *temp = realloc( info->au_buffer, 2 * new_au_buffer_size );
+            if( !temp )
+                return -1;
+            info->au_buffer      = temp;
+            info->au_buffer_size = new_au_buffer_size;
+            info->au             = info->au_buffer;
+            info->incomplete_au  = info->au_buffer + new_au_buffer_size;
+            memmove( info->incomplete_au, info->au_buffer + old_au_buffer_size, info->incomplete_au_length );
+        }
+        memcpy( info->incomplete_au + info->incomplete_au_length, info->buffer, info->frame_size );
+        info->incomplete_au_length += info->frame_size;
+        info->prev_type = info->type;
+        if( complete_au )
+            break;
+    }
+    return 0;
+}
+
+static int mp4sys_dts_get_accessunit( mp4sys_importer_t *importer, uint32_t track_number, lsmash_sample_t *buffered_sample )
+{
+    debug_if( !importer || !importer->info || !buffered_sample->data || !buffered_sample->length )
+        return -1;
+    if( !importer->info || track_number != 1 )
+        return -1;
+    lsmash_audio_summary_t *summary = (lsmash_audio_summary_t *)lsmash_get_entry_data( importer->summaries, track_number );
+    if( !summary )
+        return -1;
+    mp4sys_dts_info_t *info = (mp4sys_dts_info_t *)importer->info;
+    mp4sys_importer_status current_status = info->status;
+    if( current_status == MP4SYS_IMPORTER_EOF && info->au_length == 0 )
+    {
+        buffered_sample->length = 0;
+        return 0;
+    }
+    if( current_status == MP4SYS_IMPORTER_CHANGE )
+    {
+        free( summary->exdata );
+        summary->max_au_length = 0;
+    }
+    memcpy( buffered_sample->data, info->au, info->au_length );
+    buffered_sample->length = info->au_length;
+    buffered_sample->dts = info->au_number++ * summary->samples_in_frame;
+    buffered_sample->cts = buffered_sample->dts;
+    buffered_sample->prop.random_access_type = ISOM_SAMPLE_RANDOM_ACCESS_TYPE_SYNC;
+    if( info->status == MP4SYS_IMPORTER_EOF )
+    {
+        info->au_length = 0;
+        return 0;
+    }
+    if( dts_get_next_accessunit_internal( importer ) )
+        return -1;
+    return current_status;
+}
+
+static int mp4sys_dts_probe( mp4sys_importer_t* importer )
+{
+    mp4sys_dts_info_t *info = mp4sys_create_dts_info();
+    if( !info )
+        return -1;
+    importer->info = info;
+    if( dts_get_next_accessunit_internal( importer ) )
+    {
+        mp4sys_remove_dts_info( importer->info );
+        importer->info = NULL;
+        return -1;
+    }
+    lsmash_audio_summary_t *summary = dts_create_summary( info );
+    if( !summary )
+    {
+        mp4sys_remove_dts_info( importer->info );
+        importer->info = NULL;
+        return -1;
+    }
+    if( info->status != MP4SYS_IMPORTER_EOF )
+        info->status = MP4SYS_IMPORTER_OK;
+    info->au_number = 0;
+    if( lsmash_add_entry( importer->summaries, summary ) )
+    {
+        mp4sys_remove_dts_info( importer->info );
+        importer->info = NULL;
+        lsmash_cleanup_summary( (lsmash_summary_t *)summary );
+        return -1;
+    }
+    return 0;
+}
+
+const static mp4sys_importer_functions mp4sys_dts_importer =
+{
+    "dts",
+    1,
+    mp4sys_dts_probe,
+    mp4sys_dts_get_accessunit,
+    mp4sys_dts_cleanup
+};
+
+/***************************************************************************
     H.264 importer
 ***************************************************************************/
 typedef struct
@@ -3794,6 +4269,7 @@ const static mp4sys_importer_functions* mp4sys_importer_tbl[] = {
     &mp4sys_amr_importer,
     &mp4sys_ac3_importer,
     &mp4sys_eac3_importer,
+    &mp4sys_dts_importer,
     &mp4sys_h264_importer,
     NULL,
 };

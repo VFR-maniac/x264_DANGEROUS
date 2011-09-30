@@ -975,13 +975,56 @@ static int isom_set_qtff_lpcm_description( isom_audio_entry_t *audio )
     return 0;
 }
 
-static int isom_set_extra_description( isom_audio_entry_t *audio )
+static void isom_set_isom_default_description( isom_audio_entry_t *audio )
 {
     lsmash_audio_summary_t *summary = &audio->summary;
+    audio->version        = 0;      /* reserved */
+    audio->revision_level = 0;      /* reserved */
+    audio->vendor         = 0;      /* reserved */
+    audio->channelcount   = 2;      /* template */
+    audio->samplesize     = 16;     /* template */
+    audio->samplerate     = summary->frequency <= UINT16_MAX ? summary->frequency << 16 : 0;    /* template */
+    audio->compression_ID = 0;      /* pre_defined */
+    audio->packet_size    = 0;      /* reserved */
+}
+
+static void isom_set_qtff_dts_description( isom_audio_entry_t *audio )
+{
+    lsmash_audio_summary_t *summary = &audio->summary;
+    audio->type                          = QT_CODEC_TYPE_DTS_AUDIO;
+    audio->version                       = 2;
+    audio->revision_level                = 0;
+    audio->vendor                        = 0;
+    audio->channelcount                  = 3;
+    audio->samplesize                    = 16;
+    audio->compression_ID                = -2;
+    audio->samplerate                    = 0x00010000;
+    audio->sizeOfStructOnly              = 72;
+    audio->audioSampleRate               = (union {double d; uint64_t i;}){summary->frequency}.i;
+    audio->numAudioChannels              = summary->channels;
+    audio->always7F000000                = 0x7F000000;
+    audio->constBitsPerChannel           = 0;
+    audio->formatSpecificFlags           = 0;
+    audio->constBytesPerAudioPacket      = 0;
+    audio->constLPCMFramesPerAudioPacket = summary->samples_in_frame;
+}
+
+static int isom_set_extra_description( isom_audio_entry_t *audio )
+{
     audio->data_reference_index = 1;
-    audio->samplerate = summary->frequency <= UINT16_MAX ? summary->frequency << 16 : 0;
-    audio->channelcount = 2;
-    audio->samplesize = 16;
+    lsmash_audio_summary_t *summary = &audio->summary;
+    switch( audio->type )
+    {
+        case ISOM_CODEC_TYPE_DTSC_AUDIO :
+        case ISOM_CODEC_TYPE_DTSE_AUDIO :
+        case ISOM_CODEC_TYPE_DTSH_AUDIO :
+        case ISOM_CODEC_TYPE_DTSL_AUDIO :
+        case QT_CODEC_TYPE_DTS_AUDIO :
+            isom_set_qtff_dts_description( audio );
+            break;
+        default :
+            isom_set_isom_default_description( audio );
+    }
     if( summary->exdata )
     {
         audio->exdata = malloc( summary->exdata_length );
@@ -1162,6 +1205,11 @@ int lsmash_add_sample_entry( lsmash_root_t *root, uint32_t track_ID, uint32_t sa
         case ISOM_CODEC_TYPE_EC_3_AUDIO :
         case ISOM_CODEC_TYPE_SAMR_AUDIO :
         case ISOM_CODEC_TYPE_SAWB_AUDIO :
+        case ISOM_CODEC_TYPE_DTSC_AUDIO :
+        case ISOM_CODEC_TYPE_DTSE_AUDIO :
+        case ISOM_CODEC_TYPE_DTSH_AUDIO :
+        case ISOM_CODEC_TYPE_DTSL_AUDIO :
+        case QT_CODEC_TYPE_DTS_AUDIO :
         case QT_CODEC_TYPE_23NI_AUDIO :
         case QT_CODEC_TYPE_NONE_AUDIO :
         case QT_CODEC_TYPE_LPCM_AUDIO :
@@ -1175,9 +1223,6 @@ int lsmash_add_sample_entry( lsmash_root_t *root, uint32_t track_ID, uint32_t sa
         case QT_CODEC_TYPE_NOT_SPECIFIED :
 #if 0
         case ISOM_CODEC_TYPE_DRA1_AUDIO :
-        case ISOM_CODEC_TYPE_DTSC_AUDIO :
-        case ISOM_CODEC_TYPE_DTSH_AUDIO :
-        case ISOM_CODEC_TYPE_DTSL_AUDIO :
         case ISOM_CODEC_TYPE_ENCA_AUDIO :
         case ISOM_CODEC_TYPE_G719_AUDIO :
         case ISOM_CODEC_TYPE_G726_AUDIO :
@@ -2864,6 +2909,7 @@ void isom_remove_sample_description( isom_sample_entry_t *sample )
         case ISOM_CODEC_TYPE_ALAC_AUDIO :
         case ISOM_CODEC_TYPE_SAMR_AUDIO :
         case ISOM_CODEC_TYPE_SAWB_AUDIO :
+        case QT_CODEC_TYPE_DTS_AUDIO :
         case QT_CODEC_TYPE_23NI_AUDIO :
         case QT_CODEC_TYPE_NONE_AUDIO :
         case QT_CODEC_TYPE_LPCM_AUDIO :
@@ -2877,6 +2923,7 @@ void isom_remove_sample_description( isom_sample_entry_t *sample )
         case QT_CODEC_TYPE_NOT_SPECIFIED :
         case ISOM_CODEC_TYPE_DRA1_AUDIO :
         case ISOM_CODEC_TYPE_DTSC_AUDIO :
+        case ISOM_CODEC_TYPE_DTSE_AUDIO :
         case ISOM_CODEC_TYPE_DTSH_AUDIO :
         case ISOM_CODEC_TYPE_DTSL_AUDIO :
         case ISOM_CODEC_TYPE_EC_3_AUDIO :
@@ -4133,6 +4180,7 @@ static int isom_write_stsd( lsmash_bs_t *bs, isom_trak_entry_t *trak )
             case ISOM_CODEC_TYPE_EC_3_AUDIO :
             case ISOM_CODEC_TYPE_SAMR_AUDIO :
             case ISOM_CODEC_TYPE_SAWB_AUDIO :
+            case QT_CODEC_TYPE_DTS_AUDIO :
             case QT_CODEC_TYPE_23NI_AUDIO :
             case QT_CODEC_TYPE_NONE_AUDIO :
             case QT_CODEC_TYPE_LPCM_AUDIO :
@@ -4147,6 +4195,7 @@ static int isom_write_stsd( lsmash_bs_t *bs, isom_trak_entry_t *trak )
 #if 0
             case ISOM_CODEC_TYPE_DRA1_AUDIO :
             case ISOM_CODEC_TYPE_DTSC_AUDIO :
+            case ISOM_CODEC_TYPE_DTSE_AUDIO :
             case ISOM_CODEC_TYPE_DTSH_AUDIO :
             case ISOM_CODEC_TYPE_DTSL_AUDIO :
             case ISOM_CODEC_TYPE_ENCA_AUDIO :
@@ -6188,6 +6237,7 @@ static uint64_t isom_update_stsd_size( isom_stsd_t *stsd )
             case ISOM_CODEC_TYPE_EC_3_AUDIO :
             case ISOM_CODEC_TYPE_SAMR_AUDIO :
             case ISOM_CODEC_TYPE_SAWB_AUDIO :
+            case QT_CODEC_TYPE_DTS_AUDIO :
             case QT_CODEC_TYPE_23NI_AUDIO :
             case QT_CODEC_TYPE_NONE_AUDIO :
             case QT_CODEC_TYPE_LPCM_AUDIO :
@@ -6202,6 +6252,7 @@ static uint64_t isom_update_stsd_size( isom_stsd_t *stsd )
 #if 0
             case ISOM_CODEC_TYPE_DRA1_AUDIO :
             case ISOM_CODEC_TYPE_DTSC_AUDIO :
+            case ISOM_CODEC_TYPE_DTSE_AUDIO :
             case ISOM_CODEC_TYPE_DTSH_AUDIO :
             case ISOM_CODEC_TYPE_DTSL_AUDIO :
             case ISOM_CODEC_TYPE_ENCA_AUDIO :

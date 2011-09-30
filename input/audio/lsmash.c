@@ -93,6 +93,9 @@ static int lsmash_init( hnd_t *handle, const char *opt_str )
         case ISOM_CODEC_TYPE_EC_3_AUDIO :
             h->info.codec_name = "eac3";
             break;
+        case ISOM_CODEC_TYPE_DTSC_AUDIO :
+            h->info.codec_name = "dca";
+            break;
         default :
             AF_LOG_ERR( h, "unknown audio stream type.\n" );
             goto error;
